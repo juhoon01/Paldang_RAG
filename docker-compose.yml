@@ -1,0 +1,45 @@
+#version: '3.8'
+
+services:
+  # 1. API 서버 (RAG 로직 실행)
+  rag_api:
+    build: .
+    container_name: rag_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app
+      - ./data:/app/data
+    depends_on:
+      - chroma
+      - ollama
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "1200"]
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=gemma:2b
+
+  # 2. Vector DB (Chroma)
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: chroma_db
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/data
+
+  # 3. LLM 서버 (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_llm
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+    - OLLAMA_NUM_THREADS=8  
+    - OLLAMA_NUM_PARALLEL=1
+    - OLLAMA_KEEP_ALIVE=30m
+    #- OLLAMA_CONTEXT_LENGTH=8192
+volumes:
+  chroma_data:
+  ollama_data:
