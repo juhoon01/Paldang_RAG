@@ -6,10 +6,9 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.llms import Ollama
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.runnables import RunnablePassthrough
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from operator import itemgetter
 from chromadb.utils import embedding_functions
 import chromadb
 
@@ -23,8 +22,6 @@ class QueryRequest(BaseModel):
 # --- 2. RAG 설정 상수 ---
 CHROMA_HOST = "chroma" 
 CHROMA_PORT = 8000 
-#OLLAMA_BASE_URL = "http://ollama:11434"
-#OLLAMA_MODEL = "llama3" 
 OLLAMA_MODEL = "gemma:2b"
 OLLAMA_HOST = "ollama"  
 OLLAMA_PORT = 11434 
@@ -72,12 +69,22 @@ def initialize_rag_pipeline(max_retries=5, delay=5):
     # 4.2. 문서 로드 및 분할
     loader = TextLoader(DOCUMENT_PATH, encoding='utf-8')
     documents = loader.load()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    
+    # **************** [변경] 텍스트 스플리터 전략 개선 ****************
+    # 문서 구조(## 헤더, \n\n 단락)에 맞게 분할 문자를 명시적으로 지정하여 검색 정확도를 높입니다.
+    separator_list = ["\n\n", "##", "\n"] 
+    
+    text_splitter = RecursiveCharacterTextSplitter(
+        separators=separator_list,
+        chunk_size=500, # 청크 크기를 500으로 조정 (이전 시도 800보다 작게)
+        chunk_overlap=50 # 오버랩을 줄여 중복 최소화
+    )
+    # ***************************************************************
+
     texts = text_splitter.split_documents(documents)
     print(f"총 {len(texts)}개의 청크로 분할되었습니다.")
     
     # 4.3. 벡터스토어 (Chroma DB) 연결 및 인덱싱
-    # Chroma DB 설정
     chroma_client_host = CHROMA_HOST
     chroma_client_port = CHROMA_PORT
 
@@ -92,26 +99,27 @@ def initialize_rag_pipeline(max_retries=5, delay=5):
             )
             
             # 2. Chroma 인스턴스 생성 및 인덱싱
-            # client_settings 대신 client 인자에 직접 전달
             vectorstore = Chroma.from_documents(
                 texts,
                 embeddings_model,
                 collection_name=COLLECTION_NAME,
-                client=chroma_client # <--- 'url' 대신 'client' 인자를 사용합니다.
+                client=chroma_client 
             )
             print("Chroma DB 인덱싱 완료 및 벡터스토어 생성 성공.")
             
             # 4.4. LLM 설정 및 RAG 체인 생성 (LCEL)
             llm = Ollama(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL)
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+            
+            # **************** [변경] 검색 결과 개수 증가 ****************
+            # k 값을 3에서 5로 늘려 더 많은 문맥을 LLM에게 전달
+            retriever = vectorstore.as_retriever(search_kwargs={"k": 5}) 
+            # ********************************************************
             
             # 검색 결과를 문자열로 포맷팅하는 함수
             def format_docs(docs):
                 return "\n\n".join(doc.page_content for doc in docs)
 
             # LCEL RAG Chain 정의 (Runnable Sequence)
-            # 1. 'question'을 받고 retriever를 실행하여 'context'를 가져옵니다.
-            # 2. 'context'와 'question'을 PROMPT에 전달하고 LLM을 실행합니다.
             rag_chain = (
                 {"context": retriever | format_docs, "question": RunnablePassthrough()}
                 | PROMPT
@@ -143,11 +151,8 @@ async def process_query(request: QueryRequest):
     
     try:
         # LCEL Chain 실행
-        # 참고: LCEL은 invoke 대신 stream, batch 등 다양한 실행 모드를 지원합니다.
         answer = rag_chain.invoke(request.query)
         
-        # LCEL은 RetrievalQA와 달리 기본적으로 소스를 반환하지 않습니다.
-        # 소스를 반환하려면 체인 구성을 확장해야 하지만, 현재 단계에서는 간단히 답변만 반환합니다.
         # (테스트를 위해 임시로 소스 경로를 하드코딩합니다.)
         sources = [DOCUMENT_PATH] 
 
